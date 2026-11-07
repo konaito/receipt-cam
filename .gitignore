@@ -1,0 +1,7 @@
+# clasp の個人設定（gas/push.sh が作る）
+gas/.clasp.json
+gas/.deployment-id
+
+tmp/
+.DS_Store
+__pycache__/

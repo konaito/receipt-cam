@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="description" content="撮ると Google Drive のフォルダに届く領収書カメラ">
+<title>receipt-cam</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<!-- UI 部品は Ionic Framework（MIT）。版を固定し、service worker がキャッシュする -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@ionic/core@9.0.10/css/ionic.bundle.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/@ionic/core@9.0.10/dist/ionic/ionic.esm.js"></script>
+<style>
+  :root { --ion-color-primary: #17150f; --ion-color-primary-rgb: 23,21,15; --ion-color-primary-contrast: #fff;
+          --ion-color-primary-shade: #000; --ion-color-primary-tint: #2e2c26; }
+  [hidden] { display: none !important; } /* Ionic の部品にも hidden を効かせる */
+  /* カメラ画面。ファインダーを全面に出し、操作は上下に重ねる */
+  #cam { position: fixed; inset: 0; background: #000; overflow: hidden; }
+  #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  #flash.on { animation: flash .25s ease-out; }
+  @keyframes flash { from { opacity: .8; } to { opacity: 0; } }
+  .bar { position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
+  .bar.top { top: 0; padding-top: calc(env(safe-area-inset-top) + 8px); background: linear-gradient(rgba(0,0,0,.45), transparent); }
+  .bar.bottom { bottom: 0; padding: 18px 28px calc(env(safe-area-inset-bottom) + 24px); background: linear-gradient(transparent, rgba(0,0,0,.5)); }
+  .bar ion-chip { --background: rgba(255,255,255,.92); --color: #17150f; margin: 0; font-weight: 600; }
+  #status[data-s="unset"] #status-icon { color: var(--ion-color-danger); }
+  #status[data-s="pending"] #status-icon { color: var(--ion-color-warning-shade); }
+  #status[data-s="ok"] #status-icon { color: var(--ion-color-success); }
+  .bar ion-button { --color: #fff; }
+  #zoom { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 132px);
+          width: auto; --background: rgba(0,0,0,.45); border-radius: 999px; }
+  #zoom ion-segment-button { --color: #fff; --color-checked: #ffd54a; --indicator-color: transparent; min-width: 48px; min-height: 34px; font-weight: 700; }
+  #shutter { width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff; background: transparent; padding: 4px; }
+  #shutter::after { content: ""; display: block; width: 100%; height: 100%; border-radius: 50%; background: #fff; transition: transform .1s; }
+  #shutter:active::after { transform: scale(.88); }
+  #shutter:disabled { opacity: .4; }
+  #tray { position: relative; width: 52px; height: 52px; border-radius: 10px; border: 2px solid #fff; background: rgba(255,255,255,.15); padding: 0; overflow: visible; }
+  #tray img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
+  #tray ion-badge { position: absolute; top: -8px; right: -8px; }
+  #nocam { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; text-align: center; padding: 32px; }
+  /* 疎通確認と一覧 */
+  .check ion-icon[slot="start"], .check ion-spinner[slot="start"] { margin-inline-end: 14px; }
+  .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px 16px 24px; }
+  .shots figure { position: relative; margin: 0; aspect-ratio: 3/4; border-radius: 8px; overflow: hidden; background: #f2f2f2; }
+  .shots img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .shots ion-badge { position: absolute; left: 6px; bottom: 6px; }
+  code { font-size: .9em; }
+</style>
+</head>
+<body>
+<ion-app>
+  <div id="cam">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="flash"></div>
+    <div id="nocam" hidden><ion-text><h3>カメラを使えない</h3><p id="nocam-msg"></p></ion-text></div>
+
+    <div class="bar top">
+      <ion-chip id="status"><ion-icon id="status-icon" name="ellipse"></ion-icon><ion-label id="status-text">送り先を設定</ion-label></ion-chip>
+      <div>
+        <ion-button id="torch" fill="clear" shape="round" hidden aria-label="ライト"><ion-icon slot="icon-only" name="flashlight-outline"></ion-icon></ion-button>
+        <ion-button id="open-settings" fill="clear" shape="round" aria-label="設定"><ion-icon slot="icon-only" name="settings-outline"></ion-icon></ion-button>
+      </div>
+    </div>
+
+    <ion-segment id="zoom" value="1" hidden></ion-segment>
+
+    <div class="bar bottom">
+      <button id="tray" type="button" aria-label="撮った写真"><img id="tray-img" alt="" hidden><ion-badge id="tray-badge" color="danger" hidden></ion-badge></button>
+      <button id="shutter" type="button" aria-label="撮る" disabled></button>
+      <ion-button id="pick" fill="clear" shape="round" aria-label="画像を選んで送る"><ion-icon slot="icon-only" name="images-outline"></ion-icon></ion-button>
+      <input id="file" type="file" accept="image/*" multiple hidden>
+    </div>
+  </div>
+
+  <ion-modal id="settings" initial-breakpoint="1" breakpoints="[0, 1]">
+    <ion-header>
+      <ion-toolbar>
+        <ion-title>送り先</ion-title>
+        <ion-buttons slot="end"><ion-button id="settings-close">閉じる</ion-button></ion-buttons>
+      </ion-toolbar>
+    </ion-header>
+    <ion-content class="ion-padding">
+      <ion-text color="medium"><p>自分の Google Apps Script の URL を入れると、撮った写真がその Drive のフォルダに直接届く。ログインは要らない。</p></ion-text>
+      <ion-textarea id="api-input" fill="outline" label="送り先 URL" label-placement="floating" auto-grow="true" rows="3"
+        placeholder="https://script.google.com/macros/s/…/exec?k=…" autocapitalize="off" spellcheck="false"></ion-textarea>
+      <ion-button id="paste" fill="clear" size="small"><ion-icon slot="start" name="clipboard-outline"></ion-icon>貼り付け</ion-button>
+      <ion-button id="test" expand="block">疎通確認</ion-button>
+
+      <ion-list id="checks" lines="full" hidden>
+        <ion-item class="check" data-step="url"><ion-icon slot="start" name="ellipse-outline" color="medium"></ion-icon><ion-label>URL の形<p></p></ion-label></ion-item>
+        <ion-item class="check" data-step="reach"><ion-icon slot="start" name="ellipse-outline" color="medium"></ion-icon><ion-label>Apps Script に届く<p></p></ion-label></ion-item>
+        <ion-item class="check" data-step="key"><ion-icon slot="start" name="ellipse-outline" color="medium"></ion-icon><ion-label>キーが合う<p></p></ion-label></ion-item>
+        <ion-item class="check" data-step="drive"><ion-icon slot="start" name="ellipse-outline" color="medium"></ion-icon><ion-label>Drive のフォルダ<p></p></ion-label></ion-item>
+      </ion-list>
+      <ion-button id="save" expand="block" color="success" disabled>この送り先を使う</ion-button>
+
+      <ion-list inset="true">
+        <ion-item><ion-label>いまの送り先</ion-label><ion-note slot="end" id="kv-api">未設定</ion-note></ion-item>
+        <ion-item id="kv-folder-item"><ion-label>保存先</ion-label><ion-note slot="end" id="kv-folder">—</ion-note></ion-item>
+        <ion-item><ion-label>未送信</ion-label><ion-note slot="end" id="kv-pending">0 枚</ion-note></ion-item>
+      </ion-list>
+      <ion-button id="send-now" expand="block" fill="outline">今すぐ送る</ion-button>
+      <ion-button id="forget" expand="block" fill="clear" color="danger">送り先を消す</ion-button>
+
+      <ion-accordion-group>
+        <ion-accordion value="howto">
+          <ion-item slot="header"><ion-label>Apps Script の立て方</ion-label></ion-item>
+          <div slot="content" class="ion-padding">
+            <ol>
+              <li><a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">新しい Apps Script</a> を作り、<a href="https://github.com/konaito/receipt-cam/blob/main/gas/Code.js" target="_blank" rel="noopener"><code>gas/Code.js</code></a> の中身を貼る</li>
+              <li>関数 <code>setup</code> を実行して Drive の権限を許可する。実行ログにキーが出る</li>
+              <li>「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」。実行するユーザーは「自分」、アクセスできるユーザーは「全員」</li>
+              <li>出てきた <code>/exec</code> の URL の末尾に <code>?k=&lt;キー&gt;</code> を付けて、上の欄に入れる</li>
+            </ol>
+            <p>保存先はマイドライブの <code>receipts</code> フォルダ。別のフォルダにするときは、スクリプトのプロパティ <code>FOLDER_ID</code> にフォルダの ID を入れる。</p>
+          </div>
+        </ion-accordion>
+      </ion-accordion-group>
+    </ion-content>
+  </ion-modal>
+
+  <ion-modal id="recent" initial-breakpoint="0.75" breakpoints="[0, 0.75, 1]">
+    <ion-header><ion-toolbar><ion-title>撮った写真</ion-title><ion-buttons slot="end"><ion-button id="recent-close">閉じる</ion-button></ion-buttons></ion-toolbar></ion-header>
+    <ion-content>
+      <div id="grid" class="shots"></div>
+      <ion-text color="medium" id="grid-empty" hidden><p class="ion-text-center">まだ撮っていない</p></ion-text>
+    </ion-content>
+  </ion-modal>
+
+  <ion-toast id="toast" duration="2600" position="top" position-anchor="status"></ion-toast>
+</ion-app>
+
+<script src="queue.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
