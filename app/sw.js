@@ -1,6 +1,6 @@
 // アプリ本体と Ionic（CDN、版を固定）をキャッシュして圏外でも開けるようにし、Background Sync で未送信を送る
 importScripts('queue.js');
-const CACHE = 'receipt-cam-v5';
+const CACHE = 'receipt-cam-v6';
 const SHELL = ['./', 'index.html', 'app.js', 'queue.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const CDN = 'https://cdn.jsdelivr.net/npm/@ionic/core@9.0.10/';
 
