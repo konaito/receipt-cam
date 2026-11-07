@@ -146,7 +146,7 @@ async function send() {
     if (e.code !== 'no-api') toast('未送信あり（あとで自動で送る）: ' + e.message);
   }
   await refresh();
-  if ($('recent').isOpen) renderRecent();
+  if (openPages.has('recent')) renderRecent();
 }
 
 function showTray(src) {
@@ -184,13 +184,26 @@ async function refresh() {
   $('kv-pending').textContent = `${n} 枚`;
 }
 
-bus?.addEventListener('message', () => { refresh(); if ($('recent').isOpen) renderRecent(); });
+bus?.addEventListener('message', () => { refresh(); if (openPages.has('recent')) renderRecent(); });
 
 function toast(message) {
   const t = $('toast');
   t.message = message;
   t.present?.();
 }
+
+// ---------------------------------------------------------------- 全画面のページ
+// 設定と一覧は全画面で開く。開いたら履歴を1つ積み、Android の戻る操作で閉じられるようにする
+// present() で開いたモーダルは isOpen に出ないので、開いているページを自分で持つ
+const openPages = new Set();
+for (const id of ['settings', 'recent']) {
+  const m = $(id);
+  m.addEventListener('ionModalDidPresent', () => { openPages.add(id); history.pushState({ page: id }, ''); });
+  m.addEventListener('ionModalDidDismiss', () => { openPages.delete(id); if (history.state?.page === id) history.back(); });
+}
+addEventListener('popstate', () => {
+  for (const id of openPages) if (history.state?.page !== id) $(id).dismiss();
+});
 
 // ---------------------------------------------------------------- 設定と疎通確認
 

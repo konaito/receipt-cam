@@ -41,6 +41,8 @@
   #tray img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
   #tray ion-badge { position: absolute; top: -8px; right: -8px; }
   #nocam { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; text-align: center; padding: 32px; }
+  /* 設定と一覧は、画面の大きさによらず全画面のページにする */
+  ion-modal { --width: 100%; --height: 100%; --border-radius: 0; }
   /* 疎通確認と一覧 */
   .check ion-icon[slot="start"], .check ion-spinner[slot="start"] { margin-inline-end: 14px; }
   .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px 16px 24px; }
@@ -75,11 +77,11 @@
     </div>
   </div>
 
-  <ion-modal id="settings" initial-breakpoint="1" breakpoints="[0, 1]">
+  <ion-modal id="settings">
     <ion-header>
       <ion-toolbar>
+        <ion-buttons slot="start"><ion-button id="settings-close" aria-label="戻る"><ion-icon slot="icon-only" name="arrow-back"></ion-icon></ion-button></ion-buttons>
         <ion-title>送り先</ion-title>
-        <ion-buttons slot="end"><ion-button id="settings-close">閉じる</ion-button></ion-buttons>
       </ion-toolbar>
     </ion-header>
     <ion-content class="ion-padding">
@@ -122,8 +124,8 @@
     </ion-content>
   </ion-modal>
 
-  <ion-modal id="recent" initial-breakpoint="0.75" breakpoints="[0, 0.75, 1]">
-    <ion-header><ion-toolbar><ion-title>撮った写真</ion-title><ion-buttons slot="end"><ion-button id="recent-close">閉じる</ion-button></ion-buttons></ion-toolbar></ion-header>
+  <ion-modal id="recent">
+    <ion-header><ion-toolbar><ion-buttons slot="start"><ion-button id="recent-close" aria-label="戻る"><ion-icon slot="icon-only" name="arrow-back"></ion-icon></ion-button></ion-buttons><ion-title>撮った写真</ion-title></ion-toolbar></ion-header>
     <ion-content>
       <div id="grid" class="shots"></div>
       <ion-text color="medium" id="grid-empty" hidden><p class="ion-text-center">まだ撮っていない</p></ion-text>
