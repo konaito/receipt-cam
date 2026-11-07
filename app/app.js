@@ -137,7 +137,8 @@ $('file').addEventListener('change', async (ev) => {
 
 async function send() {
   try {
-    const reg = await navigator.serviceWorker?.ready;
+    // ready は service worker が無いと永久に待つので、登録の有無をすぐ返す getRegistration を使う
+    const reg = await navigator.serviceWorker?.getRegistration();
     await reg?.sync?.register('drain'); // 画面を閉じても、つながったら送る
   } catch (e) { /* Background Sync 非対応。画面が開いている間に送る */ }
   try {
