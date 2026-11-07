@@ -3,6 +3,7 @@
 // 保存先はスクリプトのプロパティ FOLDER_ID。空なら setup() がマイドライブに receipts フォルダを作る
 var VERSION = 2;
 var DEFAULT_FOLDER_NAME = 'receipts';
+var APP_URL = 'https://konaito.github.io/receipt-cam/'; // カメラアプリ。自分の Pages に置いたらここを変える
 
 // 疎通確認。キーが合えば保存先のフォルダ名を返す
 function doGet(e) {
@@ -65,9 +66,25 @@ function setup() {
     props.setProperty('KEY', key);
   }
   var folder = getFolder();
-  Logger.log('保存先: ' + folder.getName() + ' ' + folder.getUrl());
-  Logger.log('キー: ' + key);
-  Logger.log('送り先 URL: デプロイした「ウェブアプリの URL」（/exec で終わる）の末尾に ?k=' + key + ' を付ける');
+  console.log('保存先: ' + folder.getName() + ' ' + folder.getUrl());
+  console.log('キー: ' + key);
+
+  // デプロイ済みで /exec の URL が取れれば、そのまま開けるセットアップ用リンクを出す
+  var url = '';
+  try { url = ScriptApp.getService().getUrl() || ''; } catch (e) { /* 未デプロイ */ }
+  var steps = ['次はカメラアプリで:'];
+  if (/\/exec$/.test(url)) {
+    var api = url + '?k=' + key;
+    steps.push('1. スマホでこのリンクを開く（送り先 URL が入り、疎通確認まで進む）: ' + APP_URL + '#api=' + encodeURIComponent(api));
+    steps.push('   リンクを使わないときは、設定画面の「送り先 URL」にこれを貼る: ' + api);
+  } else {
+    steps.push('0. まだなら「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」、実行するユーザー「自分」、アクセスできるユーザー「全員」でデプロイする');
+    steps.push('1. ' + APP_URL + ' を開き、設定画面の「送り先 URL」に「ウェブアプリの URL（/exec で終わる）?k=' + key + '」を入れる');
+  }
+  steps.push('2. 「疎通確認」を押し、4つ（URL の形・Apps Script に届く・キーが合う・Drive のフォルダ「' + folder.getName() + '」）が通るのを確かめる');
+  steps.push('3. 「この送り先を使う」を押す');
+  steps.push('4. ブラウザのメニューから「ホーム画面に追加」する');
+  console.log(steps.join('\n'));
 }
 
 // キーを作り直す。今の送り先 URL は使えなくなる
