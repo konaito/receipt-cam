@@ -1,7 +1,7 @@
 {
   "name": "receipt-cam",
   "short_name": "receipt-cam",
-  "description": "撮ると Google Drive のフォルダに届く領収書カメラ",
+  "description": "撮ると Google Drive のフォルダに届くカメラ",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

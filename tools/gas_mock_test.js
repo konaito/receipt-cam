@@ -6,7 +6,7 @@ const path = require('path');
 const vm = require('vm');
 const assert = require('assert');
 
-function makeEnv() {
+function makeEnv(code = fs.readFileSync(path.join(__dirname, '..', 'gas', 'Code.js'), 'utf8')) {
   let seq = 0;
   const folders = new Map();
   const iter = (arr) => { let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; };
@@ -49,7 +49,7 @@ function makeEnv() {
     ScriptApp: { getService: () => ({ getUrl: () => '' }) },
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'gas', 'Code.js'), 'utf8'), ctx);
+  vm.runInContext(code, ctx);
   const root = ctx.DriveApp.createFolder('receipts');
   props.set('FOLDER_ID', root.id);
   const key = { k: 'k'.repeat(32) };
@@ -173,6 +173,8 @@ test('知らない action と壊れた写真の本文は断る', () => {
   assert.equal(env.post({ action: 'rm' }).error, 'bad action');
   assert.equal(env.post({ id: 'x', takenAt: 'y' }).error, 'bad request');
 });
+
+if (require.main !== module) { module.exports = { makeEnv }; return; }
 
 let failed = 0;
 for (const [name, fn] of cases) {
