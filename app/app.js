@@ -109,6 +109,7 @@ async function save(raw, thumb, dest) {
   const blob = await shrink(raw);
   await enqueue({ id, takenAt, blob, dest });
   await recentPut({ id, takenAt, thumb: thumb || await shrink(blob, 360, 0.7), state: 'pending', dest });
+  updatePendingNotice(); // 回線が細くて送信が返らない間も、通知の枚数を合わせる
   await refresh();
   send();
 }
@@ -153,8 +154,9 @@ async function send() {
     const reg = await navigator.serviceWorker?.getRegistration();
     await reg?.sync?.register('drain'); // 画面を閉じても、つながったら送る
   } catch (e) { /* Background Sync 非対応。画面が開いている間に送る */ }
+  let sent = 0;
   try {
-    await drain();
+    sent = await drain();
   } catch (e) {
     if (e.code !== 'no-api') toast('未送信あり（あとで自動で送る）: ' + e.message);
   }
@@ -162,7 +164,7 @@ async function send() {
   await refresh();
   if (openPages.has('recent')) renderRecent();
   // オフラインで足した保存先は、最初の写真を送ったときに Drive にフォルダができる。その ID を取りに行く
-  if (dests.some((d) => !d.id) && !(await pending()).some((it) => it.dest && !it.dest.id)) syncDests();
+  if (sent && dests.some((d) => !d.id)) syncDests();
 }
 
 function showTray(src) {
@@ -355,6 +357,7 @@ let hidden = [];
 let currentKey = '';
 let version = 0;
 let rootName = '既定';
+let destGen = 0; // 手元の一覧を変えるたびに増やす。古い GET の応答で上書きしないため
 
 async function loadDests() {
   dests = (await kvGet('dests')) || [];
@@ -366,6 +369,7 @@ async function loadDests() {
 }
 
 async function saveDests() {
+  destGen++;
   if (!dests.some((d) => d.key === currentKey)) currentKey = '';
   await kvSet('dests', dests);
   await kvSet('hidden', hidden);
@@ -408,13 +412,15 @@ async function applyServer(body) {
     if (id) seen.add(id);
     next.push({ key: d.key, id, name: f ? f.name : d.name });
   }
+  const prevHidden = hidden;
   hidden = hidden.filter((h) => server.has(h.id)).map((h) => ({ id: h.id, name: server.get(h.id).name }));
   const hiddenIds = new Set(hidden.map((h) => h.id));
   for (const f of body.folders) {
     if (!seen.has(f.id) && !hiddenIds.has(f.id)) next.push({ key: crypto.randomUUID(), id: f.id, name: f.name });
   }
+  const same = JSON.stringify(next) === JSON.stringify(dests) && JSON.stringify(hidden) === JSON.stringify(prevHidden);
   dests = next;
-  await saveDests();
+  if (!same) await saveDests();
   await refresh();
 }
 
@@ -422,7 +428,11 @@ async function applyServer(body) {
 async function syncDests() {
   const api = await kvGet('api');
   if (!api) return;
-  try { await applyServer(await ping(api)); } catch (e) { /* あとで合わせる */ }
+  const gen = destGen;
+  try {
+    const body = await ping(api);
+    if (gen === destGen) await applyServer(body); // 待っている間に足した・外した保存先を消さない
+  } catch (e) { /* あとで合わせる */ }
 }
 
 // ---- 帯
@@ -521,15 +531,14 @@ function v2Notice() {
   });
 }
 
-async function alertBox(opts) {
-  const a = document.createElement('ion-alert');
-  Object.assign(a, opts);
-  document.querySelector('ion-app').append(a);
-  await a.present();
-  const res = await a.onDidDismiss();
-  a.remove();
-  return res;
+// index.html に置いた1つの ion-alert / ion-action-sheet を使い回す
+async function overlay(id, opts) {
+  const el = $(id);
+  Object.assign(el, { header: undefined, message: undefined, inputs: [], buttons: [] }, opts);
+  await el.present();
+  return el.onDidDismiss();
 }
+const alertBox = (opts) => overlay('alert', opts);
 
 // 名前を1つ聞く。キャンセルなら null
 async function askName(header, value = '') {
@@ -582,9 +591,14 @@ async function pushDest(d) {
   await saveDests();
 }
 
-async function renameDest(d) {
+// 一覧は同期で作り直されることがあるので、待ったあとは key で引き直す
+const destByKey = (key) => dests.find((x) => x.key === key);
+
+async function renameDest(key) {
+  let d = destByKey(key);
+  if (!d) return;
   const raw = await askName('名前を変える', d.name);
-  if (raw === null) return;
+  if (raw === null || !(d = destByKey(key))) return;
   const err = destNameError(raw);
   if (err) { toast(err); return; }
   const name = raw.trim();
@@ -596,31 +610,32 @@ async function renameDest(d) {
     catch (e) { toast(isOffline(e) ? 'つながっているときに変えられる' : '変えられなかった: ' + e.message); return; }
     if (!body.ok) { toast(body.error === 'exists' ? 'Drive に同じ名前のフォルダがある' : '変えられなかった: ' + body.error); return; }
   }
+  d = destByKey(key);
+  if (!d) return;
   d.name = name;
   await saveDests();
 }
 
-async function hideDest(d) {
-  dests = dests.filter((x) => x !== d);
+async function hideDest(key) {
+  const d = destByKey(key);
+  if (!d) return;
+  dests = dests.filter((x) => x.key !== key);
   if (d.id) hidden.push({ id: d.id, name: d.name }); // Drive のフォルダは消さない
   await saveDests();
   toast(`「${d.name}」を帯から外した。Drive のフォルダは残る`);
 }
 
 async function destMenu(d) {
-  const sheet = document.createElement('ion-action-sheet');
-  sheet.header = d.name;
-  sheet.buttons = [
-    { text: '名前を変える', data: 'rename' },
-    { text: '帯から外す', role: 'destructive', data: 'hide' },
-    { text: 'やめる', role: 'cancel' },
-  ];
-  document.querySelector('ion-app').append(sheet);
-  await sheet.present();
-  const { data } = await sheet.onDidDismiss();
-  sheet.remove();
-  if (data === 'rename') renameDest(d);
-  if (data === 'hide') hideDest(d);
+  const { data } = await overlay('sheet', {
+    header: d.name,
+    buttons: [
+      { text: '名前を変える', data: 'rename' },
+      { text: '帯から外す', role: 'destructive', data: 'hide' },
+      { text: 'やめる', role: 'cancel' },
+    ],
+  });
+  if (data === 'rename') renameDest(d.key);
+  if (data === 'hide') hideDest(d.key);
 }
 
 function renderDestSettings() {
@@ -648,8 +663,9 @@ function renderDestSettings() {
     item.innerHTML = '<ion-label></ion-label><ion-button slot="end" fill="clear">戻す</ion-button>';
     item.querySelector('ion-label').textContent = h.name;
     item.querySelector('ion-button').addEventListener('click', async () => {
-      hidden = hidden.filter((x) => x !== h);
-      dests.push({ key: crypto.randomUUID(), id: h.id, name: h.name });
+      if (!hidden.some((x) => x.id === h.id)) return;
+      hidden = hidden.filter((x) => x.id !== h.id);
+      if (!dests.some((x) => x.id === h.id)) dests.push({ key: crypto.randomUUID(), id: h.id, name: h.name });
       await saveDests();
     });
     box.append(item);

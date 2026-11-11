@@ -169,6 +169,9 @@
   </ion-modal>
 
   <ion-toast id="toast" duration="2600" position="top" position-anchor="status"></ion-toast>
+  <!-- 保存先の追加と操作に使う。HTML に置いて起動時に読み込ませ、圏外で初めて使うときも service worker のキャッシュから出す -->
+  <ion-alert id="alert"></ion-alert>
+  <ion-action-sheet id="sheet"></ion-action-sheet>
 </ion-app>
 
 <script src="queue.js"></script>
