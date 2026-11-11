@@ -1,7 +1,19 @@
 // 撮った写真の送信キュー。画面と service worker の両方から読み込む（IndexedDB 経由で共有）
 // 送り先は設定画面で入れた URL（GAS のウェブアプリの URL?k=<キー>）。kv の 'api' にある
+// キューの各写真は、撮った時点の保存先 dest（null なら根のフォルダ、{ id?, name } なら根の直下のフォルダ）を持つ
 
 const RECENT_MAX = 60;
+const DEST_NAME_MAX = 40; // gas/Code.js の NAME_MAX と同じ値
+
+// 保存先の名前の検証。gas/Code.js の nameError と同じ規則。問題が無ければ空文字
+function destNameError(raw) {
+  const name = String(raw ?? '').trim();
+  if (!name) return '名前が空';
+  if (name.length > DEST_NAME_MAX) return `名前は ${DEST_NAME_MAX} 文字まで`;
+  if (/[\/\\]/.test(name)) return '/ と \\ は使えない';
+  if (/[\u0000-\u001f\u007f]/.test(name) || name === '.' || name === '..') return 'この名前は使えない';
+  return '';
+}
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -104,12 +116,13 @@ async function drainOnce() {
       const res = await fetch(api, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // プリフライトを避ける
-        body: JSON.stringify({ id: it.id, takenAt: it.takenAt, mime: it.blob.type, data: await toBase64(it.blob) }),
+        body: JSON.stringify({ id: it.id, takenAt: it.takenAt, mime: it.blob.type, data: await toBase64(it.blob), ...(it.dest ? { dest: it.dest } : {}) }),
       });
       const body = await readJson(res);
       if (!body.ok) throw new ApiError('rejected', body.error || 'send failed');
       await dequeue(it.id);
-      await recentUpdate(it.id, { state: 'sent', fileId: body.fileId, sentAt: new Date().toISOString() });
+      // 実際に入ったフォルダを記録する。version 2 の Apps Script は dest を返さず、根に保存する
+      await recentUpdate(it.id, { state: 'sent', fileId: body.fileId, sentAt: new Date().toISOString(), dest: body.dest || null });
       sent++;
       notify();
     }
@@ -126,4 +139,55 @@ async function drainOnce() {
 async function ping(api) {
   const res = await fetch(api, { method: 'GET' });
   return readJson(res);
+}
+
+// 保存先の作成や改名など、写真以外の POST。つながらなければ fetch の TypeError がそのまま出る
+async function postAction(api, body) {
+  const res = await fetch(api, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+  return readJson(res);
+}
+
+// ---------------------------------------------------------------- 未送信の通知
+// 枚数の正本は送信キューだけ。画面と service worker の両方からこの関数を呼び、通知とアプリのバッジを合わせる
+// 設定画面でオンにして（kv の 'notify'）、通知の権限があるときだけ出す。tag を固定して1つだけにする
+
+const NOTICE_TAG = 'pending';
+
+async function noticeRegistration() {
+  if (typeof ServiceWorkerGlobalScope !== 'undefined' && self instanceof ServiceWorkerGlobalScope) return self.registration;
+  // ready は service worker が無いと永久に待つので getRegistration を使う
+  return navigator.serviceWorker?.getRegistration();
+}
+
+// 「名刺 2・receipts 1」のような保存先ごとの内訳
+async function pendingSummary() {
+  const items = await pending();
+  const rootName = (await kvGet('folder'))?.name || '既定';
+  const counts = new Map();
+  for (const it of items) {
+    const name = it.dest?.name || rootName;
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  return { n: items.length, detail: [...counts].map(([name, c]) => `${name} ${c}`).join('・') };
+}
+
+// 失敗しても送信や sync の結果を変えないよう、例外は外に出さない
+async function updatePendingNotice() {
+  try {
+    const { n, detail } = await pendingSummary();
+    const on = (await kvGet('notify')) === true && typeof Notification !== 'undefined' && Notification.permission === 'granted';
+    const reg = await noticeRegistration();
+    if (reg?.getNotifications) {
+      if (on && n) {
+        await reg.showNotification(`未送信 ${n} 枚`, {
+          tag: NOTICE_TAG, renotify: false, silent: true, body: `${detail}（つながったら自動で送る。タップで開く）`,
+          icon: 'icon-192.png', data: { pending: n },
+        });
+      } else {
+        for (const x of await reg.getNotifications({ tag: NOTICE_TAG })) x.close();
+      }
+    }
+    if (on && n) await navigator.setAppBadge?.(n);
+    else await navigator.clearAppBadge?.();
+  } catch (e) { /* 通知を出せない端末。画面の表示はそのまま */ }
 }

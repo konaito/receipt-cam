@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#000000">
-<meta name="description" content="撮ると Google Drive のフォルダに届く領収書カメラ">
+<meta name="description" content="撮ると Google Drive のフォルダに届くカメラ">
 <title>receipt-cam</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -30,9 +30,25 @@
   #status[data-s="pending"] #status-icon { color: var(--ion-color-warning-shade); }
   #status[data-s="ok"] #status-icon { color: var(--ion-color-success); }
   .bar ion-button { --color: #fff; }
-  #zoom { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 132px);
+  #zoom { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 180px);
           width: auto; --background: rgba(0,0,0,.45); border-radius: 999px; }
   #zoom ion-segment-button { --color: #fff; --color-checked: #ffd54a; --indicator-color: transparent; min-width: 48px; min-height: 34px; font-weight: 700; }
+  /* 保存先の帯。標準カメラの「写真/ビデオ」の帯の位置に置き、左右のスワイプかタップで選ぶ。選択中は中央 */
+  #band { position: absolute; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom) + 128px); display: flex; align-items: center;
+          overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain;
+          -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
+  #band::-webkit-scrollbar { display: none; }
+  #band::before, #band::after { content: ""; flex: 0 0 50%; } /* 端の保存先も中央に来られるように */
+  #band button { flex: none; scroll-snap-align: center; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                 background: none; border: 0; padding: 10px 12px; color: rgba(255,255,255,.72); font: 600 15px/1.2 system-ui, sans-serif;
+                 text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  #band button[aria-checked="true"] { color: #ffd54a; }
+  #band .add { scroll-snap-align: none; font-size: 20px; padding: 6px 14px; }
+  /* シャッターを押したとき、どの保存先に入れたかを一瞬出す */
+  #shot-dest { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); padding: 8px 16px; border-radius: 999px;
+               background: rgba(0,0,0,.55); color: #fff; font: 600 16px/1.2 system-ui, sans-serif; opacity: 0; pointer-events: none; white-space: nowrap; }
+  #shot-dest.on { animation: cue 1s ease-out; }
+  @keyframes cue { 0% { opacity: 0; } 12% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; } }
   #shutter { width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff; background: transparent; padding: 4px; }
   #shutter::after { content: ""; display: block; width: 100%; height: 100%; border-radius: 50%; background: #fff; transition: transform .1s; }
   #shutter:active::after { transform: scale(.88); }
@@ -49,6 +65,8 @@
   .shots figure { position: relative; margin: 0; aspect-ratio: 3/4; border-radius: 8px; overflow: hidden; background: #f2f2f2; }
   .shots img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .shots ion-badge { position: absolute; left: 6px; bottom: 6px; }
+  .shots figcaption { position: absolute; left: 0; right: 0; top: 0; padding: 4px 6px 10px; color: #fff; font-size: 12px; font-weight: 600;
+                      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: linear-gradient(rgba(0,0,0,.55), transparent); }
   code { font-size: .9em; }
 </style>
 </head>
@@ -57,6 +75,7 @@
   <div id="cam">
     <video id="video" autoplay playsinline muted></video>
     <div id="flash"></div>
+    <div id="shot-dest" aria-live="polite"></div>
     <div id="nocam" hidden><ion-text><h3>カメラを使えない</h3><p id="nocam-msg"></p></ion-text></div>
 
     <div class="bar top">
@@ -68,6 +87,7 @@
     </div>
 
     <ion-segment id="zoom" value="1" hidden></ion-segment>
+    <div id="band" role="radiogroup" aria-label="保存先"></div>
 
     <div class="bar bottom">
       <button id="tray" type="button" aria-label="撮った写真"><img id="tray-img" alt="" hidden><ion-badge id="tray-badge" color="danger" hidden></ion-badge></button>
@@ -101,11 +121,27 @@
 
       <ion-list inset="true">
         <ion-item><ion-label>いまの送り先</ion-label><ion-note slot="end" id="kv-api">未設定</ion-note></ion-item>
-        <ion-item id="kv-folder-item"><ion-label>保存先</ion-label><ion-note slot="end" id="kv-folder">—</ion-note></ion-item>
         <ion-item><ion-label>未送信</ion-label><ion-note slot="end" id="kv-pending">0 枚</ion-note></ion-item>
       </ion-list>
       <ion-button id="send-now" expand="block" fill="outline">今すぐ送る</ion-button>
       <ion-button id="forget" expand="block" fill="clear" color="danger">送り先を消す</ion-button>
+
+      <ion-list-header><ion-label>保存先</ion-label></ion-list-header>
+      <ion-text color="medium"><p>カメラ画面のシャッターの上で左右に動かして選ぶ。既定のフォルダ「<span id="root-name">—</span>」と、その中に作ったフォルダに保存する。</p></ion-text>
+      <ion-text color="danger" id="dest-v2" hidden><p>保存先を増やすには、Apps Script を新しい <code>gas/Code.js</code> に更新してデプロイし直す。更新するまでは既定のフォルダに保存する。</p></ion-text>
+      <ion-list inset="true" id="dest-list">
+        <ion-item button detail="false" id="dest-root"><ion-label id="dest-root-name">—</ion-label><ion-note slot="end">既定</ion-note></ion-item>
+        <ion-reorder-group id="dest-reorder" disabled="false"></ion-reorder-group>
+      </ion-list>
+      <ion-button id="dest-add" expand="block" fill="outline"><ion-icon slot="start" name="add"></ion-icon>保存先を足す</ion-button>
+      <ion-list inset="true" id="hidden-list" hidden>
+        <ion-list-header><ion-label>帯に出していない保存先</ion-label></ion-list-header>
+        <div id="hidden-items"></div>
+      </ion-list>
+
+      <ion-list inset="true" id="notify-list">
+        <ion-item><ion-toggle id="notify" justify="space-between">未送信の枚数を通知に出す</ion-toggle></ion-item>
+      </ion-list>
 
       <ion-accordion-group>
         <ion-accordion value="howto">
@@ -117,7 +153,7 @@
               <li>「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」。実行するユーザーは「自分」、アクセスできるユーザーは「全員」</li>
               <li>出てきた <code>/exec</code> の URL の末尾に <code>?k=&lt;キー&gt;</code> を付けて、上の欄に入れる</li>
             </ol>
-            <p>保存先はマイドライブの <code>receipts</code> フォルダ。別のフォルダにするときは、スクリプトのプロパティ <code>FOLDER_ID</code> にフォルダの ID を入れる。</p>
+            <p>既定の保存先はマイドライブの <code>receipts</code> フォルダ。アプリで足した保存先は、その中のフォルダになる。別のフォルダを既定にするときは、スクリプトのプロパティ <code>FOLDER_ID</code> にフォルダの ID を入れる。</p>
           </div>
         </ion-accordion>
       </ion-accordion-group>
@@ -133,6 +169,9 @@
   </ion-modal>
 
   <ion-toast id="toast" duration="2600" position="top" position-anchor="status"></ion-toast>
+  <!-- 保存先の追加と操作に使う。HTML に置いて起動時に読み込ませ、圏外で初めて使うときも service worker のキャッシュから出す -->
+  <ion-alert id="alert"></ion-alert>
+  <ion-action-sheet id="sheet"></ion-action-sheet>
 </ion-app>
 
 <script src="queue.js"></script>
